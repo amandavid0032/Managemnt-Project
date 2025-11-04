@@ -30,7 +30,10 @@ const app = express();
 
 // ✅ Enable CORS before routes
 app.use(cors({
-  origin: "http://localhost:3000", // your React app URL
+  origin:  [
+  "http://localhost:3000",
+  "https://edusmarthub.vercel.app"
+],
   methods: ["GET", "POST", "PUT", "DELETE"],
   credentials: true
 }));

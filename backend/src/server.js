@@ -11,7 +11,7 @@ const app = express();
 app.use(cors({
   origin:  [
   "http://localhost:3000",
-  "https://mycampushub.vercel.app/"
+  "https://mycampushub.vercel.app"
 ],
   methods: ["GET", "POST", "PUT", "DELETE"],
   credentials: true

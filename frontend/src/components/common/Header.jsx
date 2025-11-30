@@ -5,7 +5,7 @@ const Header = () => {
   return (
     <header className="bg-white shadow-md py-4 px-6 flex flex-col sm:flex-row justify-between items-center sticky top-0 z-50">
       <h1 className="text-3xl font-extrabold text-blue-800 mb-2 sm:mb-0">
-        EduSmart Learning Hub
+        MyCampus Hub
       </h1>
       <div className="flex items-center space-x-4">
         <div className="relative">

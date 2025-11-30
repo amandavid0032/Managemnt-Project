@@ -1,13 +1,13 @@
 import React, { useRef } from "react";
 import { teachersData } from "../data/teachersData";
-import SectionTitle from "../common/SectionTitle";
 import TeacherPostCard from "./TeacherPostCard";
+import { FaChevronLeft, FaChevronRight } from "react-icons/fa";
 
 const TeachersSection = () => {
   const scrollRef = useRef(null);
 
   const scroll = (direction) => {
-    const scrollAmount = 384; // roughly one card width
+    const scrollAmount = 350; // same as schools
     if (scrollRef.current) {
       scrollRef.current.scrollBy({
         left: direction === "left" ? -scrollAmount : scrollAmount,
@@ -17,46 +17,49 @@ const TeachersSection = () => {
   };
 
   return (
-    <section className="py-10 bg-gray-50">
-      <div className="container mx-auto px-6 relative">
-        {/* Header with title on left and buttons on right */}
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="text-3xl font-bold text-gray-800">
-            Teachers’ Corner
-          </h2>
-          <div className="flex space-x-3">
+    <section className="py-12 bg-gray-50">
+      <div className="max-w-7xl mx-auto px-6 relative">
+        
+        {/* Header */}
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h2 className="text-2xl font-bold text-gray-800">Teachers’ Corner</h2>
+            <p className="text-gray-600 text-sm">
+              Inspiring contributions from educators
+            </p>
+          </div>
+
+          {/* Buttons same as Schools */}
+          <div className="flex gap-2">
             <button
               onClick={() => scroll("left")}
-              className="px-3 py-1 bg-white border rounded-full shadow hover:bg-gray-100"
+              className="p-2 rounded-full bg-gray-200 hover:bg-gray-300 transition"
             >
-              ←
+              <FaChevronLeft />
             </button>
+
             <button
               onClick={() => scroll("right")}
-              className="px-3 py-1 bg-white border rounded-full shadow hover:bg-gray-100"
+              className="p-2 rounded-full bg-gray-200 hover:bg-gray-300 transition"
             >
-              →
+              <FaChevronRight />
             </button>
           </div>
         </div>
 
-        {/* Scrollable area */}
+        {/* Scrollable Row */}
         <div
           ref={scrollRef}
-          className="flex overflow-x-auto space-x-6 scroll-smooth no-scrollbar"
+          className="flex gap-6 overflow-x-auto scrollbar-hide scroll-smooth pb-4"
         >
-          {teachersData.map((t) => (
-            <div key={t.id} className="flex-none w-80">
-              <TeacherPostCard teacher={t} />
+          {teachersData.map((teacher) => (
+            <div
+              key={teacher.id}
+              className="flex-shrink-0 w-[280px] sm:w-[320px] md:w-[360px]"
+            >
+              <TeacherPostCard teacher={teacher} />
             </div>
           ))}
-        </div>
-
-        {/* Show more button */}
-        <div className="flex justify-center mt-8">
-          <button className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">
-            Show More
-          </button>
         </div>
       </div>
     </section>

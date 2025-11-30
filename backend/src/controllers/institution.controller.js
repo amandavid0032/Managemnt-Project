@@ -4,10 +4,11 @@ import {
   createInstitution,
   updateInstitution,
   deleteInstitution,
+findInstitutionsByType
 } from "../models/institution.model.js";
 
 // ✅ Get all institutions
-export const getAllInstitutions = async (req, res) => {
+export const getAllInstitutions = async (req, res) => {   
   try {
     const institutions = await findAllInstitutions();
     res.status(200).json({
@@ -70,6 +71,29 @@ export const deleteInstitutionController = async (req, res) => {
     res.status(200).json({ success: true, message: "Institution deleted successfully" });
   } catch (error) {
     console.error("Error deleting institution:", error);
+    res.status(500).json({ success: false, message: "Server Error" });
+  }
+};
+
+
+
+// controller
+export const getInstitutionsByType = async (req, res) => {
+  try {
+    const type = req.query.type; // /institutions/type?type=Polytechnic
+    if (!type) {
+      return res.status(400).json({ success: false, message: "Type is required" });
+    }
+
+    const institutions = await findInstitutionsByType(type);
+
+    res.status(200).json({
+      success: true,
+      count: institutions.length,
+      data: institutions,
+    });
+  } catch (error) {
+    console.error("Error fetching institutions by type:", error);
     res.status(500).json({ success: false, message: "Server Error" });
   }
 };

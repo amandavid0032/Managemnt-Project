@@ -58,4 +58,9 @@ export const deleteInstitution = async (id) => {
   return await Institution.findByIdAndDelete(id);
 };
 
+export const findInstitutionsByType = async (type, limit = 50) => {
+  return await Institution.find({ type }).limit(limit);
+};
+
+
 export default Institution;

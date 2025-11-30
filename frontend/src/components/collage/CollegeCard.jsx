@@ -1,6 +1,17 @@
 import React, { useState } from "react";
-import { FaChevronLeft, FaChevronRight } from "react-icons/fa";
-import { FaStar, FaMapMarkerAlt } from "react-icons/fa";
+import {
+  FaChevronLeft,
+  FaChevronRight,
+  FaStar,
+  FaStarHalfAlt,
+  FaRegStar,
+  FaMapMarkerAlt,
+  FaUniversity,
+  FaLaptop,
+  FaFlask,
+  FaPaintBrush,
+} from "react-icons/fa";
+
 const CollegeCard = ({ college }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
 
@@ -19,6 +30,36 @@ const CollegeCard = ({ college }) => {
     setCurrentIndex((prev) => (prev === images.length - 1 ? 0 : prev + 1));
   };
 
+  // Icon based on college type
+  const getTypeIcon = (type) => {
+    if (!type) return <FaUniversity className="text-gray-500 mr-1" />;
+    switch (type.toLowerCase()) {
+      case "engineering":
+        return <FaLaptop className="text-blue-500 mr-1" />;
+      case "medical":
+        return <FaFlask className="text-red-500 mr-1" />;
+      case "arts":
+        return <FaPaintBrush className="text-purple-500 mr-1" />;
+      default:
+        return <FaUniversity className="text-gray-500 mr-1" />;
+    }
+  };
+
+  // Function to render stars
+  const renderStars = (rating) => {
+    const stars = [];
+    for (let i = 0; i < 5; i++) {
+      if (rating >= i + 1) {
+        stars.push(<FaStar key={i} />);
+      } else if (rating > i && rating < i + 1) {
+        stars.push(<FaStarHalfAlt key={i} />);
+      } else {
+        stars.push(<FaRegStar key={i} />);
+      }
+    }
+    return stars;
+  };
+
   return (
     <div className="rounded-lg shadow-md hover:shadow-lg transition-all duration-300 bg-white overflow-hidden">
       {/* Image Carousel */}
@@ -28,7 +69,6 @@ const CollegeCard = ({ college }) => {
           alt={college.name}
           className="w-full h-full object-cover"
         />
-
         {images.length > 1 && (
           <>
             <button
@@ -53,14 +93,24 @@ const CollegeCard = ({ college }) => {
           {college.name}
         </h3>
         <p className="text-gray-600 text-sm mt-1 flex items-center">
-                <FaMapMarkerAlt className="text-red-500 mr-1" /> {college.city}, {college.state}
-              </p>
-        
-        {college.phone && (
-          <p className="text-xs text-gray-500 mb-1">📞 {college.phone}</p>
-        )}
-        {college.email && (
-          <p className="text-xs text-gray-500 truncate">✉️ {college.email}</p>
+          <FaMapMarkerAlt className="text-red-500 mr-1" /> {college.city},{" "}
+          {college.state}
+        </p>
+
+        {/* College Type */}
+        <p className="text-gray-700 mt-2 text-sm flex items-center">
+          {getTypeIcon(college.type)}
+          {college.type || "Unknown"}
+        </p>
+
+        {/* Rating */}
+        {college.rating && (
+          <div className="flex items-center mt-2 text-yellow-500">
+            {renderStars(college.rating)}
+            <span className="ml-2 text-gray-600 text-sm">
+              {college.rating.toFixed(1)}/5
+            </span>
+          </div>
         )}
       </div>
     </div>

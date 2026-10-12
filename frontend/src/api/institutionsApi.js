@@ -1,16 +1,24 @@
 import axiosClient from "./axiosClient.js";
 
-// const institutionsApi = {
-//   getAll: (params) => axiosClient.get("/institutions", { params }),
-//   getByType: (type) => axiosClient.get(`/institutions?type=${type}`),
-// };
-
-// export default institutionsApi;
-
-
+/**
+ * Institution endpoints.
+ *
+ * The v1 API filters, paginates and searches server-side, so the client no
+ * longer re-filters what it receives.
+ */
 const institutionsApi = {
-  getAll: (params) => axiosClient.get("/institutions", { params }),
-  getByType: (type) => axiosClient.get(`/institutions/type?type=${type}`), // <- fixed
+  /**
+   * @param {object} params
+   * @param {number} [params.page]
+   * @param {number} [params.limit]
+   * @param {string} [params.search]
+   * @param {string} [params.category]  case-insensitive; the API normalises it
+   * @param {string} [params.countryCode]
+   * @param {string} [params.city]
+   * @param {'name'|'createdAt'|'updatedAt'} [params.sortBy]
+   * @param {'asc'|'desc'} [params.sortOrder]
+   */
+  list: (params) => axiosClient.get("/institutions", { params }),
 };
 
 export default institutionsApi;

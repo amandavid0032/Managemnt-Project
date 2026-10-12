@@ -1,0 +1,320 @@
+// EduHub — Phase 1 schema
+// Five tables only. Programs, courses, enrollments, fees and hostel entities
+// arrive in later phases; adding nullable FKs to tables that do not yet exist
+// would be dead weight.
+//
+// NOTE: partial unique indexes and CHECK constraints cannot be expressed in
+// this file. They are hand-written in the migration SQL and are load-bearing —
+// see prisma/migrations/*/migration.sql.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  // Prisma DROPS AND RECREATES the shadow database on every diff and every
+  // `migrate dev`. Declaring it explicitly means it can never silently fall
+  // back to a database that holds real data.
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
+  // Declared here so Prisma manages the extension. Trigram indexes created
+  // only in raw migration SQL are treated as drift and dropped on the next
+  // `migrate dev` — they must be declared in this file to survive.
+  extensions = [pg_trgm]
+}
+
+// ---------------------------------------------------------------------------
+// Enums — canonical, uppercase. Request values are normalised at the DTO
+// boundary, so "school", "School" and "SCHOOL" all resolve to SCHOOL.
+// ---------------------------------------------------------------------------
+
+enum InstitutionCategory {
+  SCHOOL
+  COLLEGE
+  UNIVERSITY
+  POLYTECHNIC
+  INSTITUTE
+  TRAINING_CENTER
+  COACHING_CENTER
+  OTHER
+}
+
+enum InstitutionStatus {
+  DRAFT
+  PENDING_REVIEW
+  PUBLISHED
+  SUSPENDED
+  ARCHIVED
+}
+
+enum DataSource {
+  MANUAL
+  SEED
+  INSTITUTION_SUBMITTED
+  GOOGLE_PLACES
+  GOV_DATASET
+}
+
+enum UserStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+/// Platform-wide authority. Deliberately separate from MembershipRole:
+/// a user is USER platform-wide and may be INSTITUTION_ADMIN at one tenant.
+enum PlatformRole {
+  USER
+  PLATFORM_ADMIN
+  SUPER_ADMIN
+}
+
+/// Authority scoped to a single institution (tenant).
+enum MembershipRole {
+  STUDENT
+  TEACHER
+  STAFF
+  INSTITUTION_ADMIN
+}
+
+enum MembershipStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  LEFT
+  REJECTED
+}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+model User {
+  id String @id @db.Uuid
+
+  /// Stored lowercase. A CHECK constraint (email = lower(email)) enforces it
+  /// at the database level, so case-variant duplicates cannot be created.
+  email String @db.VarChar(320)
+
+  /// Nullable: reserved for future OAuth-only accounts.
+  passwordHash String? @map("password_hash")
+
+  fullName String @map("full_name") @db.VarChar(200)
+  status   UserStatus @default(PENDING_VERIFICATION)
+
+  /// NEVER settable from a request DTO. Assigned server-side only.
+  platformRole PlatformRole @default(USER) @map("platform_role")
+
+  emailVerifiedAt DateTime? @map("email_verified_at") @db.Timestamptz(3)
+  lastLoginAt     DateTime? @map("last_login_at") @db.Timestamptz(3)
+
+  /// Incrementing this invalidates every outstanding access token for the user.
+  tokenVersion Int @default(0) @map("token_version")
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
+
+  refreshTokens         RefreshToken[]
+  memberships           InstitutionMembership[]
+  createdInstitutions   Institution[]           @relation("InstitutionCreatedBy")
+
+  @@index([status])
+  @@index([deletedAt])
+  @@map("users")
+}
+
+/// Persisted refresh tokens. This table is what makes logout real —
+/// a stateless JWT alone cannot be revoked.
+model RefreshToken {
+  id     String @id @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  /// SHA-256 of the token. The raw value is never stored.
+  tokenHash String @map("token_hash") @db.VarChar(64)
+
+  /// Rotation family. Replaying a consumed token revokes the whole family.
+  familyId String @map("family_id") @db.Uuid
+
+  expiresAt    DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz(3)
+  replacedById String?   @map("replaced_by_id") @db.Uuid
+
+  userAgent String? @map("user_agent") @db.VarChar(512)
+  ipAddress String? @map("ip_address") @db.VarChar(45)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tokenHash])
+  @@index([userId])
+  @@index([familyId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+// ---------------------------------------------------------------------------
+// Institutions
+// ---------------------------------------------------------------------------
+
+model Institution {
+  id String @id @db.Uuid
+
+  /// URL identity. Unique among non-deleted rows (partial index in migration),
+  /// so a soft-deleted slug can be reclaimed.
+  slug String @db.VarChar(200)
+
+  name      String  @db.VarChar(300)
+  legalName String? @map("legal_name") @db.VarChar(300)
+
+  category InstitutionCategory
+
+  /// Local/native term where the canonical category is a poor fit —
+  /// "Gymnasium", "Lycée", "TAFE", "Junior College".
+  typeLabel String? @map("type_label") @db.VarChar(120)
+
+  description String? @db.Text
+
+  /// Optional and NOT unique. Treating email as an institution's identity was
+  /// the flaw in the previous model: real discovery data frequently has no
+  /// email, or shares one across campuses.
+  email   String? @db.VarChar(320)
+  phone   String? @db.VarChar(50)
+  website String? @db.VarChar(500)
+
+  addressLine1 String? @map("address_line1") @db.VarChar(300)
+  addressLine2 String? @map("address_line2") @db.VarChar(300)
+  city         String? @db.VarChar(150)
+  state        String? @db.VarChar(150)
+  postalCode   String? @map("postal_code") @db.VarChar(30)
+
+  /// ISO-3166-1 alpha-2. CHECK constraint enforces the format.
+  countryCode String @map("country_code") @db.Char(2)
+
+  latitude  Decimal? @db.Decimal(9, 6)
+  longitude Decimal? @db.Decimal(9, 6)
+
+  status InstitutionStatus @default(DRAFT)
+
+  source          DataSource @default(MANUAL)
+  sourceUpdatedAt DateTime?  @map("source_updated_at") @db.Timestamptz(3)
+  verifiedAt      DateTime?  @map("verified_at") @db.Timestamptz(3)
+
+  // NOTE: there is deliberately NO rating column. Ratings must be derived from
+  // real reviews and arrive with the Reviews module as rating_avg/rating_count.
+
+  createdByUserId String? @map("created_by_user_id") @db.Uuid
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
+
+  createdBy   User?                   @relation("InstitutionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  externalIds InstitutionExternalId[]
+  memberships InstitutionMembership[]
+  media       InstitutionMedia[]
+
+  // Fuzzy search without a search engine. `type: Gin` + gin_trgm_ops makes
+  // ILIKE '%term%' index-backed instead of a sequential scan.
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@index([city(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@index([category, countryCode])
+  @@index([countryCode, state, city])
+  @@index([status])
+  @@index([deletedAt])
+  @@index([latitude, longitude])
+  @@map("institutions")
+}
+
+/// Provenance and the ingestion idempotency key.
+/// Built in Phase 1 although integrations land in Phase 4 — retrofitting
+/// provenance onto a populated table is considerably more painful.
+model InstitutionExternalId {
+  id            String @id @db.Uuid
+  institutionId String @map("institution_id") @db.Uuid
+
+  source     DataSource
+  externalId String     @map("external_id") @db.VarChar(255)
+
+  metadata  Json      @default("{}")
+  fetchedAt DateTime? @map("fetched_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  institution Institution @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+
+  /// The dedupe key: re-syncing the same upstream record is idempotent.
+  @@unique([source, externalId])
+  @@index([institutionId])
+  @@map("institution_external_ids")
+}
+
+/// Institution photography.
+///
+/// A separate table rather than a `String[]` column on institutions: images
+/// need an explicit order, alt text for accessibility, and provenance —
+/// external providers licence photos individually, so the source must be
+/// recorded per image, not per institution.
+///
+/// Binary storage is NOT handled here. Phase 1 stores URLs only; S3 uploads
+/// arrive when institutions can submit their own media.
+model InstitutionMedia {
+  id            String @id @db.Uuid
+  institutionId String @map("institution_id") @db.Uuid
+
+  url       String  @db.VarChar(1000)
+  /// Required for accessibility. Nullable only because external providers
+  /// frequently supply none.
+  altText   String? @map("alt_text") @db.VarChar(300)
+  sortOrder Int     @default(0) @map("sort_order")
+
+  source          DataSource @default(MANUAL)
+  attributionText String?    @map("attribution_text") @db.VarChar(500)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  institution Institution @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+
+  @@index([institutionId, sortOrder])
+  @@map("institution_media")
+}
+
+// ---------------------------------------------------------------------------
+// Multi-tenancy
+// ---------------------------------------------------------------------------
+
+/// The tenancy core. A user's EduHub account is theirs; institutions are
+/// relationships that begin and end. This is why `user.institutionId` was
+/// rejected — it cannot express a student who transfers, or a teacher who
+/// also studies at the same institution.
+model InstitutionMembership {
+  id            String @id @db.Uuid
+  userId        String @map("user_id") @db.Uuid
+  institutionId String @map("institution_id") @db.Uuid
+
+  role   MembershipRole
+  status MembershipStatus @default(PENDING)
+
+  /// The institution-issued identifier (roll number, staff ID).
+  /// An IDENTIFIER, never a credential — it grants no authentication.
+  institutionMemberId String? @map("institution_member_id") @db.VarChar(100)
+
+  joinedAt DateTime? @map("joined_at") @db.Timestamptz(3)
+  leftAt   DateTime? @map("left_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  institution Institution @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+
+  @@index([institutionId, status])
+  @@index([userId])
+  @@map("institution_memberships")
+}

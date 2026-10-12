@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api:
+    name: API — typecheck, lint, test, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: eduhub
+          POSTGRES_PASSWORD: ci_password_not_a_secret
+          POSTGRES_DB: eduhub_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # CI-only values against an ephemeral database. Real secrets live in
+      # GitHub Environments and are never checked in.
+      DATABASE_URL: postgresql://eduhub:ci_password_not_a_secret@localhost:5432/eduhub_test?schema=public
+      # Prisma WIPES the shadow database. It must be separate from the one
+      # under test, or the drift check destroys the test database mid-run.
+      SHADOW_DATABASE_URL: postgresql://eduhub:ci_password_not_a_secret@localhost:5432/eduhub_shadow?schema=public
+      JWT_ACCESS_SECRET: ci_only_secret_at_least_32_characters_long_xxxx
+      NODE_ENV: test
+      THROTTLE_ENABLED: 'false'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Create shadow database
+        run: PGPASSWORD=ci_password_not_a_secret psql -h localhost -U eduhub -d postgres -c "CREATE DATABASE eduhub_shadow;"
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Apply migrations
+        # `migrate deploy` only applies committed migrations. It never
+        # generates or resets, so it is safe to run against any environment.
+        run: npx prisma migrate deploy
+
+      - name: Verify migrations match the schema
+        # Fails if schema.prisma has drifted from the committed migrations —
+        # catching the case where someone edits the schema without generating
+        # a migration.
+        run: npx prisma migrate diff
+             --from-migrations ./prisma/migrations
+             --to-schema-datamodel ./prisma/schema.prisma
+             --shadow-database-url "$SHADOW_DATABASE_URL"
+             --exit-code
+        continue-on-error: false
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test --if-present -- --passWithNoTests
+
+      - name: E2E tests (includes tenant isolation)
+        run: npm run test:e2e
+
+      - name: Build
+        run: npm run build
+
+  docker:
+    name: API — Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./api
+          push: false
+          load: true
+          tags: eduhub-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  frontend:
+    name: Frontend — build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - name: Build
+        env:
+          CI: true
+          REACT_APP_API_URL: http://localhost:4000/api/v1
+        run: npm run build

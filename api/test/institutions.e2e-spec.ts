@@ -9,6 +9,7 @@ describe('Institutions (e2e)', () => {
   let prisma: PrismaService;
   let adminToken: string;
   let userToken: string;
+  let adminId: string;
 
   beforeAll(async () => {
     ({ app, prisma } = await createTestApp());
@@ -17,6 +18,7 @@ describe('Institutions (e2e)', () => {
     const admin = await registerAndLogin(app, 'admin@inst.test', 'Admin');
     const user = await registerAndLogin(app, 'user@inst.test', 'User');
     userToken = user.accessToken;
+    adminId = admin.userId;
 
     await prisma.user.update({
       where: { id: admin.userId },
@@ -154,8 +156,13 @@ describe('Institutions (e2e)', () => {
     });
 
     it('BREACH IF FAILING: a client cannot reveal drafts via ?status=DRAFT', async () => {
-      const res = await api(app).get('/api/v1/institutions?status=DRAFT').expect(200);
-      expect(res.body.data.every((i: { status: string }) => i.status === 'PUBLISHED')).toBe(true);
+      // `status` is not in the public shape, so check the draft itself is absent
+      // and the filter was ignored (same rows as an unfiltered request).
+      const res = await api(app).get('/api/v1/institutions?status=DRAFT&limit=100').expect(200);
+      const plain = await api(app).get('/api/v1/institutions?limit=100').expect(200);
+      const slugs = res.body.data.map((i: { slug: string }) => i.slug);
+      expect(slugs).not.toContain('hidden-draft-school');
+      expect(slugs).toEqual(plain.body.data.map((i: { slug: string }) => i.slug));
     });
 
     it('shows drafts to a platform admin', async () => {
@@ -164,6 +171,81 @@ describe('Institutions (e2e)', () => {
         .set(bearer(adminToken))
         .expect(200);
       expect(res.body.meta.pagination.total).toBe(1);
+    });
+  });
+
+  describe('public response shape (allowlist)', () => {
+    // Exactly what a non-staff caller may see. A new column must be added
+    // here deliberately; it never leaks by default.
+    const PUBLIC_KEYS = [
+      'addressLine1', 'addressLine2', 'category', 'city', 'countryCode', 'description',
+      'email', 'id', 'latitude', 'legalName', 'longitude', 'media', 'name', 'phone',
+      'postalCode', 'slug', 'state', 'typeLabel', 'verifiedAt', 'website',
+    ].sort();
+    const INTERNAL_KEYS = [
+      'createdByUserId', 'status', 'source', 'sourceUpdatedAt', 'deletedAt', 'createdAt', 'updatedAt',
+    ];
+    const SLUG = 'public-shape-academy';
+
+    beforeAll(async () => {
+      const id = uuidv7();
+      await prisma.institution.create({
+        data: {
+          id,
+          name: 'Public Shape Academy',
+          slug: SLUG,
+          category: InstitutionCategory.SCHOOL,
+          countryCode: 'IN',
+          status: InstitutionStatus.PUBLISHED,
+          createdByUserId: adminId,
+          media: { create: { id: uuidv7(), url: 'https://example.com/a.jpg', altText: 'Front' } },
+        },
+      });
+    });
+
+    const shapeOf = (row: Record<string, unknown>) => Object.keys(row).sort();
+
+    it.each([
+      ['anonymous', undefined],
+      ['signed-in ordinary user', 'user'],
+    ])('BREACH IF FAILING: %s callers get only public fields from the list', async (_label, who) => {
+      const req = api(app).get(`/api/v1/institutions?search=Public%20Shape`);
+      const res = await (who ? req.set(bearer(userToken)) : req).expect(200);
+      expect(res.body.data).toHaveLength(1);
+      expect(shapeOf(res.body.data[0])).toEqual(PUBLIC_KEYS);
+      expect(JSON.stringify(res.body)).not.toContain(adminId);
+    });
+
+    it.each([
+      ['anonymous', undefined],
+      ['signed-in ordinary user', 'user'],
+    ])('BREACH IF FAILING: %s callers get only public fields from the detail', async (_label, who) => {
+      const req = api(app).get(`/api/v1/institutions/${SLUG}`);
+      const res = await (who ? req.set(bearer(userToken)) : req).expect(200);
+      expect(shapeOf(res.body.data)).toEqual(PUBLIC_KEYS);
+      for (const key of INTERNAL_KEYS) expect(res.body.data).not.toHaveProperty(key);
+      expect(JSON.stringify(res.body)).not.toContain(adminId);
+    });
+
+    it('keeps the fields the discovery UI renders, including media', async () => {
+      const res = await api(app).get(`/api/v1/institutions/${SLUG}`).expect(200);
+      expect(res.body.data).toMatchObject({
+        name: 'Public Shape Academy',
+        category: 'SCHOOL',
+        media: [{ url: 'https://example.com/a.jpg', altText: 'Front' }],
+      });
+    });
+
+    it('still gives platform staff the full record', async () => {
+      const list = await api(app)
+        .get(`/api/v1/institutions?search=Public%20Shape`)
+        .set(bearer(adminToken))
+        .expect(200);
+      expect(list.body.data[0]).toMatchObject({ createdByUserId: adminId, status: 'PUBLISHED' });
+
+      const one = await api(app).get(`/api/v1/institutions/${SLUG}`).set(bearer(adminToken)).expect(200);
+      expect(one.body.data).toMatchObject({ createdByUserId: adminId, source: 'MANUAL' });
+      expect(one.body.data.media).toHaveLength(1);
     });
   });
 

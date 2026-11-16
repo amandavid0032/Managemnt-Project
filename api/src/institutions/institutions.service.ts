@@ -18,6 +18,44 @@ const MEDIA_INCLUDE = {
 } as const;
 
 /**
+ * The ONLY fields anonymous visitors and ordinary signed-in users receive.
+ * An allowlist, not a blocklist: a column added to the table later stays
+ * private until someone deliberately adds it here.
+ *
+ * Deliberately absent: createdByUserId (which staff account created the
+ * record), status, source/sourceUpdatedAt (ingestion internals), deletedAt,
+ * createdAt/updatedAt. Platform staff get the full record instead.
+ */
+export const PUBLIC_INSTITUTION_SELECT = {
+  id: true,
+  slug: true,
+  name: true,
+  legalName: true,
+  category: true,
+  typeLabel: true,
+  description: true,
+  email: true,
+  phone: true,
+  website: true,
+  addressLine1: true,
+  addressLine2: true,
+  city: true,
+  state: true,
+  postalCode: true,
+  countryCode: true,
+  latitude: true,
+  longitude: true,
+  verifiedAt: true,
+  // Fetched with the parent in one query — a per-row media lookup would be a
+  // classic N+1 on the busiest endpoint in the product.
+  media: MEDIA_INCLUDE,
+} as const satisfies Prisma.InstitutionSelect;
+
+export type PublicInstitution = Prisma.InstitutionGetPayload<{
+  select: typeof PUBLIC_INSTITUTION_SELECT;
+}>;
+
+/**
  * The publication lifecycle, as an explicit allow-list.
  *
  * A free-for-all `status = whatever` would let a record go straight from
@@ -82,16 +120,14 @@ export class InstitutionsService {
       [query.sortBy]: query.sortOrder,
     };
 
+    const page = { where, orderBy, skip: query.skip, take: query.limit };
+    // Full record for platform staff; the public allowlist for everyone else.
+    const rows = isPlatformStaff(user)
+      ? this.prisma.institution.findMany({ ...page, include: { media: MEDIA_INCLUDE } })
+      : this.prisma.institution.findMany({ ...page, select: PUBLIC_INSTITUTION_SELECT });
+
     const [data, total] = await this.prisma.$transaction([
-      this.prisma.institution.findMany({
-        where,
-        orderBy,
-        skip: query.skip,
-        take: query.limit,
-        // Fetched with the parent in one query — a per-row media lookup would
-        // be a classic N+1 on the busiest endpoint in the product.
-        include: { media: MEDIA_INCLUDE },
-      }),
+      rows,
       this.prisma.institution.count({ where }),
     ]);
 
@@ -108,10 +144,9 @@ export class InstitutionsService {
     };
     if (!isPlatformStaff(user)) where.status = InstitutionStatus.PUBLISHED;
 
-    const institution = await this.prisma.institution.findFirst({
-      where,
-      include: { media: MEDIA_INCLUDE },
-    });
+    const institution = isPlatformStaff(user)
+      ? await this.prisma.institution.findFirst({ where, include: { media: MEDIA_INCLUDE } })
+      : await this.prisma.institution.findFirst({ where, select: PUBLIC_INSTITUTION_SELECT });
     if (!institution) throw new NotFoundException('Institution not found');
     return institution;
   }

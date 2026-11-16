@@ -152,17 +152,6 @@ describe('Authentication (e2e)', () => {
       expect(rotated).not.toBe(first);
     });
 
-    it('BREACH IF FAILING: rejects a replayed refresh token and revokes the family', async () => {
-      const original = await login();
-      await api(app).post('/api/v1/auth/refresh').set('Cookie', original).expect(200);
-
-      // Replay of the consumed token — the signal that it was stolen.
-      await api(app).post('/api/v1/auth/refresh').set('Cookie', original).expect(401);
-
-      const active = await prisma.refreshToken.count({ where: { revokedAt: null } });
-      expect(active).toBe(0); // whole family revoked
-    });
-
     it('revokes the token on logout', async () => {
       const cookie = await login();
       await api(app).post('/api/v1/auth/logout').set('Cookie', cookie).expect(200);
@@ -171,6 +160,71 @@ describe('Authentication (e2e)', () => {
 
     it('rejects a refresh request with no cookie', () =>
       api(app).post('/api/v1/auth/refresh').expect(401));
+
+    const refreshCookie = (res: { headers: Record<string, unknown> }) =>
+      ((res.headers['set-cookie'] as string[] | undefined) ?? []).join(';');
+
+    it('BREACH IF FAILING: only one of several simultaneous refreshes with the same token succeeds', async () => {
+      const cookie = await login();
+
+      const results = await Promise.all(
+        Array.from({ length: 5 }, () => api(app).post('/api/v1/auth/refresh').set('Cookie', cookie)),
+      );
+
+      const winners = results.filter((r) => r.status === 200);
+      expect(winners).toHaveLength(1);
+      expect(results.filter((r) => r.status === 401)).toHaveLength(4);
+
+      // Exactly one live token: the winner's. A second live token would be a
+      // second session the reuse detector does not know about.
+      expect(await prisma.refreshToken.count({ where: { revokedAt: null } })).toBe(1);
+
+      // The race must not log the legitimate user out: the winner keeps working.
+      await api(app).post('/api/v1/auth/refresh').set('Cookie', refreshCookie(winners[0]!)).expect(200);
+    });
+
+    it('links a rotated token to its replacement', async () => {
+      const cookie = await login();
+      const res = await api(app).post('/api/v1/auth/refresh').set('Cookie', cookie).expect(200);
+
+      const tokens = await prisma.refreshToken.findMany({ orderBy: { createdAt: 'asc' } });
+      expect(tokens).toHaveLength(2);
+      const [old, current] = tokens as [(typeof tokens)[number], (typeof tokens)[number]];
+      expect(old.revokedAt).not.toBeNull();
+      expect(old.replacedById).toBe(current.id);
+      expect(current.revokedAt).toBeNull();
+      expect(current.familyId).toBe(old.familyId);
+
+      // The rotated token keeps rotating normally.
+      await api(app).post('/api/v1/auth/refresh').set('Cookie', refreshCookie(res)).expect(200);
+    });
+
+    it('treats a replay seconds after rotation as a lost race, not theft', async () => {
+      // Two tabs share one cookie and refresh at nearly the same moment. The
+      // loser must be refused WITHOUT revoking the family, or every multi-tab
+      // user would be signed out at random.
+      const original = await login();
+      const res = await api(app).post('/api/v1/auth/refresh').set('Cookie', original).expect(200);
+
+      await api(app).post('/api/v1/auth/refresh').set('Cookie', original).expect(401);
+
+      await api(app).post('/api/v1/auth/refresh').set('Cookie', refreshCookie(res)).expect(200);
+    });
+
+    it('BREACH IF FAILING: rejects a replayed refresh token and revokes the family', async () => {
+      const original = await login();
+      const res = await api(app).post('/api/v1/auth/refresh').set('Cookie', original).expect(200);
+
+      // Age the rotation past the grace window instead of sleeping.
+      await prisma.refreshToken.updateMany({
+        where: { revokedAt: { not: null } },
+        data: { revokedAt: new Date(Date.now() - 60_000) },
+      });
+
+      await api(app).post('/api/v1/auth/refresh').set('Cookie', original).expect(401);
+      expect(await prisma.refreshToken.count({ where: { revokedAt: null } })).toBe(0);
+      await api(app).post('/api/v1/auth/refresh').set('Cookie', refreshCookie(res)).expect(401);
+    });
   });
 
   describe('protected routes', () => {

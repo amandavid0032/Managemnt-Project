@@ -23,6 +23,7 @@
     "prisma:status": "prisma migrate status",
     "prisma:studio": "prisma studio",
     "db:seed": "ts-node --transpile-only prisma/seed.ts",
+    "create:superadmin": "node --env-file-if-exists=.env -r ts-node/register/transpile-only prisma/create-super-admin.ts",
     "db:reset": "prisma migrate reset --force"
   },
   "prisma": {
@@ -44,6 +45,7 @@
     "cookie-parser": "^1.4.7",
     "helmet": "^8.0.0",
     "nestjs-pino": "^4.3.0",
+    "nodemailer": "^10.5.0",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "pino": "^9.6.0",
@@ -52,7 +54,7 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "uuidv7": "^1.0.2",
-    "zod": "^3.24.1"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@faker-js/faker": "^9.4.0",
@@ -63,6 +65,7 @@
     "@types/express": "^5.0.0",
     "@types/jest": "^29.5.14",
     "@types/node": "^22.10.7",
+    "@types/nodemailer": "^8.0.2",
     "@types/passport-jwt": "^4.0.1",
     "@types/supertest": "^6.0.2",
     "eslint": "^9.18.0",
@@ -92,5 +95,8 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
+  },
+  "overrides": {
+    "deepmerge-ts": "^8.0.2"
   }
 }

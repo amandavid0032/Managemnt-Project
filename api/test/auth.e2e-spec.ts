@@ -152,17 +152,6 @@ describe('Authentication (e2e)', () => {
       expect(rotated).not.toBe(first);
     });
 
-    it('BREACH IF FAILING: rejects a replayed refresh token and revokes the family', async () => {
-      const original = await login();
-      await api(app).post('/api/v1/auth/refresh').set('Cookie', original).expect(200);
-
-      // Replay of the consumed token — the signal that it was stolen.
-      await api(app).post('/api/v1/auth/refresh').set('Cookie', original).expect(401);
-
-      const active = await prisma.refreshToken.count({ where: { revokedAt: null } });
-      expect(active).toBe(0); // whole family revoked
-    });
-
     it('revokes the token on logout', async () => {
       const cookie = await login();
       await api(app).post('/api/v1/auth/logout').set('Cookie', cookie).expect(200);
@@ -171,6 +160,71 @@ describe('Authentication (e2e)', () => {
 
     it('rejects a refresh request with no cookie', () =>
       api(app).post('/api/v1/auth/refresh').expect(401));
+
+    const refreshCookie = (res: { headers: Record<string, unknown> }) =>
+      ((res.headers['set-cookie'] as string[] | undefined) ?? []).join(';');
+
+    it('BREACH IF FAILING: only one of several simultaneous refreshes with the same token succeeds', async () => {
+      const cookie = await login();
+
+      const results = await Promise.all(
+        Array.from({ length: 5 }, () => api(app).post('/api/v1/auth/refresh').set('Cookie', cookie)),
+      );
+
+      const winners = results.filter((r) => r.status === 200);
+      expect(winners).toHaveLength(1);
+      expect(results.filter((r) => r.status === 401)).toHaveLength(4);
+
+      // Exactly one live token: the winner's. A second live token would be a
+      // second session the reuse detector does not know about.
+      expect(await prisma.refreshToken.count({ where: { revokedAt: null } })).toBe(1);
+
+      // The race must not log the legitimate user out: the winner keeps working.
+      await api(app).post('/api/v1/auth/refresh').set('Cookie', refreshCookie(winners[0]!)).expect(200);
+    });
+
+    it('links a rotated token to its replacement', async () => {
+      const cookie = await login();
+      const res = await api(app).post('/api/v1/auth/refresh').set('Cookie', cookie).expect(200);
+
+      const tokens = await prisma.refreshToken.findMany({ orderBy: { createdAt: 'asc' } });
+      expect(tokens).toHaveLength(2);
+      const [old, current] = tokens as [(typeof tokens)[number], (typeof tokens)[number]];
+      expect(old.revokedAt).not.toBeNull();
+      expect(old.replacedById).toBe(current.id);
+      expect(current.revokedAt).toBeNull();
+      expect(current.familyId).toBe(old.familyId);
+
+      // The rotated token keeps rotating normally.
+      await api(app).post('/api/v1/auth/refresh').set('Cookie', refreshCookie(res)).expect(200);
+    });
+
+    it('treats a replay seconds after rotation as a lost race, not theft', async () => {
+      // Two tabs share one cookie and refresh at nearly the same moment. The
+      // loser must be refused WITHOUT revoking the family, or every multi-tab
+      // user would be signed out at random.
+      const original = await login();
+      const res = await api(app).post('/api/v1/auth/refresh').set('Cookie', original).expect(200);
+
+      await api(app).post('/api/v1/auth/refresh').set('Cookie', original).expect(401);
+
+      await api(app).post('/api/v1/auth/refresh').set('Cookie', refreshCookie(res)).expect(200);
+    });
+
+    it('BREACH IF FAILING: rejects a replayed refresh token and revokes the family', async () => {
+      const original = await login();
+      const res = await api(app).post('/api/v1/auth/refresh').set('Cookie', original).expect(200);
+
+      // Age the rotation past the grace window instead of sleeping.
+      await prisma.refreshToken.updateMany({
+        where: { revokedAt: { not: null } },
+        data: { revokedAt: new Date(Date.now() - 60_000) },
+      });
+
+      await api(app).post('/api/v1/auth/refresh').set('Cookie', original).expect(401);
+      expect(await prisma.refreshToken.count({ where: { revokedAt: null } })).toBe(0);
+      await api(app).post('/api/v1/auth/refresh').set('Cookie', refreshCookie(res)).expect(401);
+    });
   });
 
   describe('protected routes', () => {
@@ -208,6 +262,161 @@ describe('Authentication (e2e)', () => {
         .get('/api/v1/auth/me')
         .set('Authorization', `Bearer ${login.body.data.accessToken}`)
         .expect(401);
+    });
+  });
+
+  describe('/auth/me', () => {
+    /** Registers, logs in, and returns both credentials. */
+    const signIn = async () => {
+      await api(app).post('/api/v1/auth/register').send(valid).expect(201);
+      const res = await api(app)
+        .post('/api/v1/auth/login')
+        .send({ email: valid.email, password: valid.password })
+        .expect(200);
+      return {
+        accessToken: res.body.data.accessToken as string,
+        cookie: (res.headers['set-cookie'] as unknown as string[]).join(';'),
+      };
+    };
+
+    it('returns the user with their memberships', async () => {
+      const { accessToken } = await signIn();
+
+      const res = await api(app)
+        .get('/api/v1/auth/me')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+
+      expect(res.body.data.user.email).toBe(valid.email);
+      expect(res.body.data.user.platformRole).toBe('USER');
+      expect(res.body.data.memberships).toEqual([]);
+      // The credential must never ride along in the profile payload.
+      expect(res.body.data.user.passwordHash).toBeUndefined();
+    });
+
+    it('reports an ACTIVE membership but not a PENDING one', async () => {
+      const { accessToken } = await signIn();
+      const user = await prisma.user.findFirstOrThrow({ where: { email: valid.email } });
+
+      const makeInstitution = (suffix: string) =>
+        prisma.institution.create({
+          data: {
+            id: `00000000-0000-7000-8000-00000000000${suffix}`,
+            slug: `me-test-${suffix}`,
+            name: `Me Test ${suffix}`,
+            category: 'SCHOOL',
+            countryCode: 'GB',
+            status: 'PUBLISHED',
+          },
+        });
+
+      const active = await makeInstitution('1');
+      const pending = await makeInstitution('2');
+
+      await prisma.institutionMembership.createMany({
+        data: [
+          {
+            id: '00000000-0000-7000-8000-0000000000a1',
+            userId: user.id,
+            institutionId: active.id,
+            role: 'INSTITUTION_ADMIN',
+            status: 'ACTIVE',
+          },
+          {
+            id: '00000000-0000-7000-8000-0000000000a2',
+            userId: user.id,
+            institutionId: pending.id,
+            role: 'STUDENT',
+            status: 'PENDING',
+          },
+        ],
+      });
+
+      const res = await api(app)
+        .get('/api/v1/auth/me')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+
+      // A PENDING request is not access. Returning it would make the UI offer
+      // a dashboard that every API call behind it answers with 404.
+      expect(res.body.data.memberships).toEqual([
+        {
+          institutionId: active.id,
+          slug: 'me-test-1',
+          name: 'Me Test 1',
+          role: 'INSTITUTION_ADMIN',
+        },
+      ]);
+    });
+  });
+
+  describe('/auth/logout-all', () => {
+    const signInTwice = async () => {
+      await api(app).post('/api/v1/auth/register').send(valid).expect(201);
+      const first = await api(app)
+        .post('/api/v1/auth/login')
+        .send({ email: valid.email, password: valid.password })
+        .expect(200);
+      const second = await api(app)
+        .post('/api/v1/auth/login')
+        .send({ email: valid.email, password: valid.password })
+        .expect(200);
+      return { first, second };
+    };
+
+    it('requires authentication', () =>
+      api(app).post('/api/v1/auth/logout-all').expect(401));
+
+    it('BREACH IF FAILING: kills every session on every device', async () => {
+      const { first, second } = await signInTwice();
+      const firstCookie = (first.headers['set-cookie'] as unknown as string[]).join(';');
+      const secondCookie = (second.headers['set-cookie'] as unknown as string[]).join(';');
+
+      expect(await prisma.refreshToken.count({ where: { revokedAt: null } })).toBe(2);
+
+      const res = await api(app)
+        .post('/api/v1/auth/logout-all')
+        .set('Authorization', `Bearer ${first.body.data.accessToken}`)
+        .expect(200);
+
+      expect(res.body.data.sessionsRevoked).toBe(2);
+      expect(await prisma.refreshToken.count({ where: { revokedAt: null } })).toBe(0);
+
+      // Access tokens die immediately via tokenVersion — including the OTHER
+      // device's, which never sent a request.
+      await api(app)
+        .get('/api/v1/auth/me')
+        .set('Authorization', `Bearer ${first.body.data.accessToken}`)
+        .expect(401);
+      await api(app)
+        .get('/api/v1/auth/me')
+        .set('Authorization', `Bearer ${second.body.data.accessToken}`)
+        .expect(401);
+
+      // ...and neither device can mint a new one.
+      await api(app).post('/api/v1/auth/refresh').set('Cookie', firstCookie).expect(401);
+      await api(app).post('/api/v1/auth/refresh').set('Cookie', secondCookie).expect(401);
+    });
+
+    it('leaves other users untouched', async () => {
+      const { first } = await signInTwice();
+
+      const other = { email: 'other@auth.test', password: 'ValidPass123', fullName: 'Other' };
+      await api(app).post('/api/v1/auth/register').send(other).expect(201);
+      const otherLogin = await api(app)
+        .post('/api/v1/auth/login')
+        .send({ email: other.email, password: other.password })
+        .expect(200);
+
+      await api(app)
+        .post('/api/v1/auth/logout-all')
+        .set('Authorization', `Bearer ${first.body.data.accessToken}`)
+        .expect(200);
+
+      await api(app)
+        .get('/api/v1/auth/me')
+        .set('Authorization', `Bearer ${otherLogin.body.data.accessToken}`)
+        .expect(200);
     });
   });
 });

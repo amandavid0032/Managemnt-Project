@@ -1,5 +1,8 @@
 import React, { useEffect, useState } from "react";
-import { FaSearch, FaGraduationCap } from "react-icons/fa";
+import { Link, useNavigate } from "react-router-dom";
+import { FaSearch, FaGraduationCap, FaSignOutAlt } from "react-icons/fa";
+import { useAuth } from "../../auth/AuthContext.jsx";
+import { landingPathFor } from "../../auth/landing.js";
 
 /**
  * The search box is now wired to the API.
@@ -11,6 +14,21 @@ import { FaSearch, FaGraduationCap } from "react-icons/fa";
  */
 const Header = ({ searchTerm, onSearchChange }) => {
   const [draft, setDraft] = useState(searchTerm ?? "");
+  const { isLoading, isAuthenticated, user, memberships, logout } = useAuth();
+  const [signingOut, setSigningOut] = useState(false);
+  const navigate = useNavigate();
+
+  const dashboardPath = isAuthenticated ? landingPathFor(user, memberships) : null;
+
+  const handleSignOut = async () => {
+    setSigningOut(true);
+    try {
+      await logout();
+      navigate("/", { replace: true });
+    } finally {
+      setSigningOut(false);
+    }
+  };
 
   // Debounced: one request when typing settles, not one per keystroke.
   useEffect(() => {
@@ -52,10 +70,51 @@ const Header = ({ searchTerm, onSearchChange }) => {
       </form>
 
       {/*
-        No "Profile" button. Authentication exists in the API but there is no
-        sign-in screen yet, so a button that goes nowhere would be exactly the
-        kind of fake control this cleanup removed. It returns with the auth UI.
+        Nothing is rendered while the session is still being restored — showing
+        "Sign in" to a user who turns out to be signed in, then swapping it a
+        moment later, reads as a bug.
       */}
+      {!isLoading && (
+        <div className="flex items-center gap-3">
+          {isAuthenticated ? (
+            <>
+              {/* Only offered when there is a real dashboard to open — platform
+                  admin or a school role. Everyone else lands on their profile. */}
+              {dashboardPath && dashboardPath !== "/profile" && (
+                <Link
+                  to={dashboardPath}
+                  className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-800"
+                >
+                  Dashboard
+                </Link>
+              )}
+              <Link
+                to="/profile"
+                className="text-sm font-medium text-gray-700 hover:text-blue-700"
+                title="My profile"
+              >
+                {user?.fullName ?? "My profile"}
+              </Link>
+              <button
+                type="button"
+                onClick={handleSignOut}
+                disabled={signingOut}
+                className="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50"
+              >
+                <FaSignOutAlt aria-hidden="true" />
+                {signingOut ? "Signing out…" : "Sign out"}
+              </button>
+            </>
+          ) : (
+            <Link
+              to="/login"
+              className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-800"
+            >
+              Sign in
+            </Link>
+          )}
+        </div>
+      )}
     </header>
   );
 };

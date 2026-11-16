@@ -16,11 +16,12 @@ import { PlatformRole } from '@prisma/client';
 import type { Request } from 'express';
 import { PlatformRoles } from '../common/decorators/platform-roles.decorator';
 import { Public } from '../common/decorators/public.decorator';
-import { CurrentUser } from '../common/decorators/tenant.decorator';
+import { type Actor, CurrentActor } from '../common/decorators/actor.decorator';
 import type { AuthUser } from '../common/types/auth-user';
 import { CreateInstitutionDto } from './dto/create-institution.dto';
 import { QueryInstitutionsDto } from './dto/query-institutions.dto';
 import { UpdateInstitutionDto } from './dto/update-institution.dto';
+import { UpdateInstitutionStatusDto } from './dto/update-institution-status.dto';
 import { InstitutionsService } from './institutions.service';
 
 @Controller({ path: 'institutions', version: '1' })
@@ -46,20 +47,35 @@ export class InstitutionsController {
 
   @PlatformRoles(PlatformRole.PLATFORM_ADMIN, PlatformRole.SUPER_ADMIN)
   @Post()
-  create(@Body() dto: CreateInstitutionDto, @CurrentUser() user: AuthUser) {
-    return this.institutions.create(dto, user);
+  create(@Body() dto: CreateInstitutionDto, @CurrentActor() actor: Actor) {
+    return this.institutions.create(dto, actor);
   }
 
   @PlatformRoles(PlatformRole.PLATFORM_ADMIN, PlatformRole.SUPER_ADMIN)
   @Patch(':id')
-  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateInstitutionDto) {
-    return this.institutions.update(id, dto);
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateInstitutionDto,
+    @CurrentActor() actor: Actor,
+  ) {
+    return this.institutions.update(id, dto, actor);
+  }
+
+  /** Publication lifecycle. Separate from PATCH :id — see the DTO for why. */
+  @PlatformRoles(PlatformRole.PLATFORM_ADMIN, PlatformRole.SUPER_ADMIN)
+  @Patch(':id/status')
+  changeStatus(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateInstitutionStatusDto,
+    @CurrentActor() actor: Actor,
+  ) {
+    return this.institutions.changeStatus(id, dto, actor);
   }
 
   @PlatformRoles(PlatformRole.PLATFORM_ADMIN, PlatformRole.SUPER_ADMIN)
   @HttpCode(HttpStatus.OK)
   @Delete(':id')
-  remove(@Param('id', ParseUUIDPipe) id: string) {
-    return this.institutions.softDelete(id);
+  remove(@Param('id', ParseUUIDPipe) id: string, @CurrentActor() actor: Actor) {
+    return this.institutions.softDelete(id, actor);
   }
 }

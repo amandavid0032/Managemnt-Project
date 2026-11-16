@@ -8,7 +8,13 @@ import {
 } from '@prisma/client';
 import { uuidv7 } from 'uuidv7';
 import type { PrismaService } from '../src/database/prisma.service';
-import { api, createTestApp, registerAndLogin, resetDatabase } from './helpers';
+import {
+  api,
+  createTestApp,
+  registerAndLogin,
+  registerVerifiedAndLogin,
+  resetDatabase,
+} from './helpers';
 
 /**
  * THE MOST IMPORTANT TEST IN THIS CODEBASE.
@@ -53,7 +59,10 @@ describe('Tenant isolation (e2e)', () => {
     alice = await registerAndLogin(app, 'alice@tenant.test', 'Alice');
     bob = await registerAndLogin(app, 'bob@tenant.test', 'Bob');
     carol = await registerAndLogin(app, 'carol@tenant.test', 'Carol');
-    outsider = await registerAndLogin(app, 'outsider@tenant.test', 'Outsider');
+    // Verified through the real email link: since Phase 2 an institution can
+    // only enrol an account whose address is verified (see
+    // MembershipsService.create), and the write tests below enrol this user.
+    outsider = await registerVerifiedAndLogin(app, 'outsider@tenant.test', 'Outsider');
 
     const [aliceM, bobM] = await Promise.all([
       prisma.institutionMembership.create({

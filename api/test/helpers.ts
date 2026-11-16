@@ -4,6 +4,8 @@ import cookieParser from 'cookie-parser';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/database/prisma.service';
+import { MAIL_PROVIDER } from '../src/mail/mail.types';
+import type { MemoryMailProvider } from '../src/mail/providers';
 
 /**
  * Boots the real application graph — global guards, pipes and filters
@@ -45,6 +47,9 @@ export async function createTestApp(
 export async function resetDatabase(prisma: PrismaService): Promise<void> {
   await prisma.$executeRawUnsafe(`
     TRUNCATE TABLE
+      "audit_logs",
+      "email_tokens",
+      "user_profiles",
       "institution_memberships",
       "institution_external_ids",
       "refresh_tokens",
@@ -73,4 +78,40 @@ export async function registerAndLogin(
     .expect(200);
 
   return { userId: reg.body.data.id, accessToken: login.body.data.accessToken };
+}
+
+// ---------------------------------------------------------------------------
+// Email
+// ---------------------------------------------------------------------------
+
+
+export const mailbox = (app: INestApplication): MemoryMailProvider =>
+  app.get<MemoryMailProvider>(MAIL_PROVIDER);
+
+/**
+ * The token from the most recent email to `to` whose link points at `path`.
+ * Read out of the message body — the same place a person gets it from.
+ */
+export function tokenFromEmail(app: INestApplication, to: string, path: string): string {
+  const messages = mailbox(app).outbox.filter((m) => m.to === to && m.text.includes(path));
+  const last = messages[messages.length - 1];
+  if (!last) throw new Error(`No email to ${to} containing ${path}`);
+  const match = new RegExp(`${path}#token=([A-Za-z0-9_\\-%]+)`).exec(last.text);
+  if (!match?.[1]) throw new Error(`Email to ${to} has no ${path} token`);
+  return decodeURIComponent(match[1]);
+}
+
+/** Registers, logs in and verifies the address through the real email link. */
+export async function registerVerifiedAndLogin(
+  app: INestApplication,
+  email: string,
+  fullName = 'Test User',
+  password = 'ValidPass123',
+): Promise<{ userId: string; accessToken: string }> {
+  const session = await registerAndLogin(app, email, fullName, password);
+  await api(app)
+    .post('/api/v1/auth/email/verify')
+    .send({ token: tokenFromEmail(app, email, '/verify-email') })
+    .expect(200);
+  return session;
 }

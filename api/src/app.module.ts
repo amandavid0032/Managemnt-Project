@@ -4,6 +4,8 @@ import { ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 import { randomUUID } from 'node:crypto';
+import { AdminModule } from './admin/admin.module';
+import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { AppThrottlerGuard } from './common/guards/app-throttler.guard';
@@ -15,13 +17,19 @@ import { AppConfigModule } from './config/config.module';
 import type { Env } from './config/env.schema';
 import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
+import { InstitutionDashboardModule } from './institution-dashboard/institution-dashboard.module';
 import { InstitutionsModule } from './institutions/institutions.module';
+import { MailModule } from './mail/mail.module';
 import { MembershipsModule } from './memberships/memberships.module';
+import { ProfilesModule } from './profiles/profiles.module';
+import { UsersModule } from './users/users.module';
 
 @Module({
   imports: [
     AppConfigModule,
     DatabaseModule,
+    MailModule,
+    AuditModule,
 
     LoggerModule.forRootAsync({
       inject: [ConfigService],
@@ -45,6 +53,8 @@ import { MembershipsModule } from './memberships/memberships.module';
               'req.headers.authorization',
               'req.headers.cookie',
               'req.body.password',
+              // Single-use email tokens are bearer credentials until consumed.
+              'req.body.token',
               'res.headers["set-cookie"]',
             ],
             censor: '[REDACTED]',
@@ -65,8 +75,12 @@ import { MembershipsModule } from './memberships/memberships.module';
 
     AuthModule,
     InstitutionsModule,
+    InstitutionDashboardModule,
     MembershipsModule,
+    ProfilesModule,
+    UsersModule,
     HealthModule,
+    AdminModule,
   ],
   providers: [
     // Order matters: rate limit, then authenticate, then authorise

@@ -33,8 +33,56 @@ export const envSchema = z
     LOG_LEVEL: z
       .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
       .default('info'),
+
+    // --- Email -------------------------------------------------------------
+    // Public URL of the web app. Links in emails point here, so it must be
+    // the address a person's browser can reach — never the API's.
+    APP_URL: z.string().url().default('http://localhost:3000'),
+
+    //   console — prints each email (including its link) to the log. Dev only.
+    //   memory  — keeps emails in-process for the test suite to read. Test only.
+    //   smtp    — real delivery. Any transactional provider that offers SMTP
+    //             relay (SES, SendGrid, Postmark, Resend, Mailgun) works.
+    MAIL_PROVIDER: z.enum(['console', 'memory', 'smtp']).default('console'),
+    MAIL_FROM: z.string().min(3).default('EduHub <no-reply@eduhub.local>'),
+
+    SMTP_HOST: z.string().optional(),
+    SMTP_PORT: z.coerce.number().int().positive().default(587),
+    // true = TLS from the first byte (port 465). false = STARTTLS upgrade
+    // (port 587), which nodemailer requires the server to offer.
+    SMTP_SECURE: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    SMTP_USER: z.string().optional(),
+    SMTP_PASSWORD: z.string().optional(),
   })
   .superRefine((env, ctx) => {
+    if (env.MAIL_PROVIDER === 'smtp' && !env.SMTP_HOST) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['SMTP_HOST'],
+        message: 'SMTP_HOST is required when MAIL_PROVIDER=smtp',
+      });
+    }
+    // The console provider writes live reset links into the log stream —
+    // in production that turns log access into account takeover. The memory
+    // provider silently drops mail. Neither may run there.
+    if (env.NODE_ENV === 'production' && env.MAIL_PROVIDER !== 'smtp') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MAIL_PROVIDER'],
+        message: 'MAIL_PROVIDER must be smtp in production',
+      });
+    }
+    if (env.MAIL_PROVIDER === 'memory' && env.NODE_ENV !== 'test') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MAIL_PROVIDER'],
+        message: 'MAIL_PROVIDER=memory is only allowed when NODE_ENV=test',
+      });
+    }
+
     // A development placeholder secret must never reach production.
     if (env.NODE_ENV === 'production' && !env.THROTTLE_ENABLED) {
       ctx.addIssue({

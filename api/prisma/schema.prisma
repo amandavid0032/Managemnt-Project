@@ -1,5 +1,5 @@
-// EduHub — Phase 1 schema
-// Five tables only. Programs, courses, enrollments, fees and hostel entities
+// EduHub schema — Phase 1 foundation + Phase 2 profiles and email tokens.
+// Phase 1 started with five tables. Programs, courses, enrollments, fees and hostel entities
 // arrive in later phases; adding nullable FKs to tables that do not yet exist
 // would be dead weight.
 //
@@ -13,8 +13,8 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
   // Prisma DROPS AND RECREATES the shadow database on every diff and every
   // `migrate dev`. Declaring it explicitly means it can never silently fall
   // back to a database that holds real data.
@@ -22,7 +22,7 @@ datasource db {
   // Declared here so Prisma manages the extension. Trigram indexes created
   // only in raw migration SQL are treated as drift and dropped on the next
   // `migrate dev` — they must be declared in this file to survive.
-  extensions = [pg_trgm]
+  extensions        = [pg_trgm]
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +88,25 @@ enum MembershipStatus {
   REJECTED
 }
 
+/// Who may read a user's profile.
+///   PUBLIC  — anyone, including visitors who are not signed in
+///   MEMBERS — any signed-in EduHub user
+///   PRIVATE — only the owner (and platform staff, for moderation)
+/// PRIVATE is the default: exposure is something a person opts into.
+enum ProfileVisibility {
+  PUBLIC
+  MEMBERS
+  PRIVATE
+}
+
+/// What a single-use emailed token authorises. One table serves both flows
+/// because their security properties are identical: random, hashed at rest,
+/// expiring, consumed exactly once.
+enum EmailTokenPurpose {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+}
+
 // ---------------------------------------------------------------------------
 // Identity
 // ---------------------------------------------------------------------------
@@ -102,7 +121,7 @@ model User {
   /// Nullable: reserved for future OAuth-only accounts.
   passwordHash String? @map("password_hash")
 
-  fullName String @map("full_name") @db.VarChar(200)
+  fullName String     @map("full_name") @db.VarChar(200)
   status   UserStatus @default(PENDING_VERIFICATION)
 
   /// NEVER settable from a request DTO. Assigned server-side only.
@@ -118,9 +137,12 @@ model User {
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
 
-  refreshTokens         RefreshToken[]
-  memberships           InstitutionMembership[]
-  createdInstitutions   Institution[]           @relation("InstitutionCreatedBy")
+  refreshTokens       RefreshToken[]
+  memberships         InstitutionMembership[] @relation("MembershipUser")
+  createdMemberships  InstitutionMembership[] @relation("MembershipCreatedBy")
+  createdInstitutions Institution[]           @relation("InstitutionCreatedBy")
+  profile             UserProfile?
+  emailTokens         EmailToken[]
 
   @@index([status])
   @@index([deletedAt])
@@ -155,6 +177,64 @@ model RefreshToken {
   @@index([familyId])
   @@index([expiresAt])
   @@map("refresh_tokens")
+}
+
+/// Presentation data a person chooses to show. Deliberately separate from
+/// `users`, which holds identity and credentials: nothing here can
+/// authenticate anyone, and nothing in `users` is ever rendered on a profile
+/// except full_name.
+///
+/// Optional 1:1. A user without a row has an empty PRIVATE profile, so
+/// existing accounts need no backfill.
+///
+/// There is no photo column. Uploads need object storage, which does not
+/// exist yet, and accepting arbitrary image URLs would let a profile embed a
+/// tracking pixel for everyone who views it.
+model UserProfile {
+  userId String @id @map("user_id") @db.Uuid
+
+  headline String? @db.VarChar(160)
+  bio      String? @db.VarChar(2000)
+  location String? @db.VarChar(120)
+
+  visibility ProfileVisibility @default(PRIVATE)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_profiles")
+}
+
+/// Single-use tokens delivered by email: password reset and address
+/// verification. Only the SHA-256 of the token is stored.
+model EmailToken {
+  id     String @id @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  purpose EmailTokenPurpose
+
+  tokenHash String @map("token_hash") @db.VarChar(64)
+
+  /// The address the token was SENT to. If the account's email changes
+  /// afterwards the token no longer proves anything and is refused.
+  email String @db.VarChar(320)
+
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(3)
+  /// Set when used OR when superseded by a newer token. Either way: dead.
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz(3)
+
+  requestIp String? @map("request_ip") @db.VarChar(45)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tokenHash])
+  @@index([userId, purpose, createdAt])
+  @@index([expiresAt])
+  @@map("email_tokens")
 }
 
 // ---------------------------------------------------------------------------
@@ -308,13 +388,64 @@ model InstitutionMembership {
   joinedAt DateTime? @map("joined_at") @db.Timestamptz(3)
   leftAt   DateTime? @map("left_at") @db.Timestamptz(3)
 
+  /// The administrator who created the link. A membership is the
+  /// institution's attestation that a person studied or worked there, so who
+  /// made that attestation is recorded. Null for rows created before Phase 2.
+  createdByUserId String? @map("created_by_user_id") @db.Uuid
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        User        @relation("MembershipUser", fields: [userId], references: [id], onDelete: Cascade)
   institution Institution @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+  createdBy   User?       @relation("MembershipCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
 
   @@index([institutionId, status])
   @@index([userId])
   @@map("institution_memberships")
+}
+
+// ---------------------------------------------------------------------------
+// Administration
+// ---------------------------------------------------------------------------
+
+/// Append-only record of administrative actions: who did what, to which
+/// record, from where, and when.
+///
+/// There are no foreign keys on purpose. An audit row must outlive whatever it
+/// describes, and an ON DELETE SET NULL would itself be an UPDATE of history.
+/// A trigger in the migration rejects every UPDATE and DELETE, so the
+/// application — whatever bug or compromised admin account drives it — can
+/// only ever add rows.
+model AuditLog {
+  id String @id @db.Uuid
+
+  /// Null only for actions taken by the system itself.
+  actorUserId String? @map("actor_user_id") @db.Uuid
+  /// The actor's platform role AT THE TIME. Roles change; history must not.
+  actorRole   String? @map("actor_role") @db.VarChar(40)
+
+  /// Dotted verb, e.g. "institution.status_changed". See audit.actions.ts.
+  action     String  @db.VarChar(80)
+  targetType String  @map("target_type") @db.VarChar(40)
+  targetId   String? @map("target_id") @db.Uuid
+
+  /// Set when the action happened inside one institution (membership changes),
+  /// so an institution's history can be read without parsing metadata.
+  institutionId String? @map("institution_id") @db.Uuid
+
+  ipAddress String? @map("ip_address") @db.VarChar(45)
+  userAgent String? @map("user_agent") @db.VarChar(512)
+
+  /// Before/after values and reasons. Never credentials or tokens.
+  metadata Json @default("{}")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([createdAt])
+  @@index([targetType, targetId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([institutionId, createdAt])
+  @@index([action, createdAt])
+  @@map("audit_logs")
 }

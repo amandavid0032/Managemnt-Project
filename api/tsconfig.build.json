@@ -1,4 +1,8 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["node_modules", "test", "dist", "**/*spec.ts", "prisma/seed.ts"]
+  // The whole prisma/ directory, not just seed.ts: those scripts run through
+  // ts-node and are never part of the server bundle. Listing one file by name
+  // meant adding a second script silently pulled prisma/ into the compilation,
+  // which moved the output to dist/src/main.js and broke `start:prod`.
+  "exclude": ["node_modules", "test", "dist", "**/*spec.ts", "prisma"]
 }

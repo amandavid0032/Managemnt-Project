@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsEnum, IsIn, IsOptional, IsString, Length, MaxLength } from 'class-validator';
+import { IsBoolean, IsEnum, IsIn, IsOptional, IsString, Length, MaxLength } from 'class-validator';
 import { InstitutionCategory, InstitutionStatus } from '@prisma/client';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 
@@ -55,6 +55,12 @@ export class QueryInstitutionsDto extends PaginationQueryDto {
   @Transform(toEnumCase)
   @IsEnum(InstitutionStatus)
   status?: InstitutionStatus;
+
+  /** Staff only: true = approved at least once (verifiedAt set). */
+  @IsOptional()
+  @Transform(({ value }) => (value === 'true' ? true : value === 'false' ? false : value))
+  @IsBoolean({ message: 'verified must be true or false' })
+  verified?: boolean;
 
   @IsOptional()
   @IsIn(SORTABLE_FIELDS, { message: `sortBy must be one of: ${SORTABLE_FIELDS.join(', ')}` })

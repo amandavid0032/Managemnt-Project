@@ -6,9 +6,12 @@ Students and parents search and compare institutions globally; institutions
 manage their own operations on the same platform. Built as a **modular
 monolith** — deliberately not microservices.
 
-> **Status: Phase 1 (foundation).** Institution discovery, authentication and
-> the multi-tenant membership model are implemented and tested. Everything in
-> the Roadmap below is not built yet.
+> **Status: Phase 2 (profiles and school dashboards).** Phase 1 (discovery,
+> authentication, multi-tenant memberships, super-admin panel) plus Phase 2
+> (profiles, education history, school dashboards, membership management,
+> password reset, email verification) are implemented and tested. Later
+> roadmap phases are not built yet. Neither phase has been clicked through in
+> a browser yet — see the checklists in `docs/`.
 >
 > The original Express + MongoDB backend has been removed now that the
 > frontend runs entirely on `api/`. It remains in git history at commit
@@ -43,7 +46,7 @@ Managemnt-Project/
 │       ├── hooks/                useInstitutions (paginated)
 │       └── components/           institutions · common · layout
 │
-├── docs/                   audit, architecture and phase reports
+├── docs/                   phase reports
 ├── docker-compose.yml      postgres + api
 └── .github/workflows/ci.yml
 ```
@@ -71,14 +74,14 @@ addable later without a rewrite.
 
 ## Documentation
 
-All project reports live in [`docs/`](docs/):
+Project documentation:
 
 | Document | What it covers |
 |---|---|
-| [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md) | **Start here** — what is done, what is verified, what is next |
-| [`docs/EDUHUB_AUDIT.md`](docs/EDUHUB_AUDIT.md) | Audit of the original codebase — inventory and security findings |
-| [`docs/EDUHUB_ARCHITECTURE.md`](docs/EDUHUB_ARCHITECTURE.md) | Architecture decisions, database design and migration plan |
-| [`docs/PHASE1_REVIEW.md`](docs/PHASE1_REVIEW.md) | What Phase 1 built, what was verified, and known issues |
+| [`project-overview.html`](project-overview.html) | **Start here** — open in a browser: what the project is, what is built, what is next |
+| [`docs/PHASE1_LOGIN_AND_ADMIN.md`](docs/PHASE1_LOGIN_AND_ADMIN.md) | Login, logout and the super admin panel — decisions, endpoints, how to run and test |
+| [`docs/PHASE2_PROFILES_AND_DASHBOARDS.md`](docs/PHASE2_PROFILES_AND_DASHBOARDS.md) | Profiles, education history, school dashboards, membership management, password reset and email verification — decisions, security review, test results, limitations |
+| [`docs/SUPER_ADMIN_DASHBOARD.md`](docs/SUPER_ADMIN_DASHBOARD.md) | Super Admin dashboard: append-only audit log, review workflow, analytics endpoints, platform-role management, permission matrix, tests, gaps |
 
 ---
 
@@ -137,6 +140,12 @@ Generate secrets with `openssl rand -hex 32`. Never commit a `.env`.
 | `THROTTLE_TTL_SECONDS` | no | `60` | |
 | `THROTTLE_LIMIT` | no | `120` | Global default; auth routes are stricter |
 | `LOG_LEVEL` | no | `info` | |
+| `APP_URL` | no | `http://localhost:3000` | Web app URL used in email links |
+| `MAIL_PROVIDER` | no | `console` | `console` (prints emails to the log, dev only) · `smtp` (**required in production**) · `memory` (tests only) |
+| `MAIL_FROM` | no | `EduHub <no-reply@eduhub.local>` | Sender address |
+| `SMTP_HOST` | when `smtp` | — | Any provider's SMTP relay |
+| `SMTP_PORT` / `SMTP_SECURE` | no | `587` / `false` | `SMTP_SECURE=true` for port 465 |
+| `SMTP_USER` / `SMTP_PASSWORD` | no | — | Secret — deployment secret store only |
 
 ### `frontend/.env.local`
 
@@ -184,7 +193,7 @@ The API container waits for Postgres to report healthy, then runs
 
 ## Database
 
-Phase 1 is six tables. Later modules hang off this foundation rather than
+Phase 1 is six tables; Phase 2 adds `user_profiles` and `email_tokens`. Later modules hang off this foundation rather than
 replacing it.
 
 ```
@@ -287,7 +296,20 @@ Error — internal detail is logged, never returned:
 | `DELETE` | `/institutions/:id` | platform admin | Soft delete |
 | `GET` | `/institutions/:institutionId/memberships` | tenant admin/staff | |
 | `GET` | `/institutions/:institutionId/memberships/:id` | tenant admin/staff | |
-| `POST` | `/institutions/:institutionId/memberships` | tenant admin | |
+| `POST` | `/institutions/:institutionId/memberships` | tenant admin | Account must have a verified email |
+| `GET` | `/institutions/:institutionId/memberships/lookup?email=` | tenant admin | Exact address only, 20/min |
+| `PATCH` | `/institutions/:institutionId/memberships/:id` | tenant admin | Role / member id |
+| `PATCH` | `/institutions/:institutionId/memberships/:id/status` | tenant admin | `ACTIVE` · `SUSPENDED` · `LEFT` (kept as history) |
+| `GET` | `/institutions/:institutionId/overview` | tenant admin/staff | School dashboard: real member counts |
+| `POST` | `/auth/password/forgot` | public | Same answer for every address |
+| `POST` | `/auth/password/reset` | public | Ends every session |
+| `POST` | `/auth/email/verify` | public | |
+| `POST` | `/auth/email/resend` | bearer | |
+| `GET` / `PATCH` | `/profiles/me` | bearer | Profile + education history |
+| `PATCH` | `/profiles/me/visibility` | bearer | `PUBLIC` · `MEMBERS` · `PRIVATE` |
+| `GET` | `/profiles/:userId` | public* | Respects visibility; never shows email |
+
+Full Phase 2 details: [`docs/PHASE2_PROFILES_AND_DASHBOARDS.md`](docs/PHASE2_PROFILES_AND_DASHBOARDS.md).
 
 \* Public, but authenticated platform staff additionally see unpublished records.
 
@@ -337,8 +359,13 @@ cd api
 npm run test:e2e
 ```
 
-85 e2e tests across four suites. The tenant isolation suite is the important
-one — each test in it is a data breach if it fails:
+268 API e2e tests across nine suites, 2 API unit tests (`npm test`) and 39
+frontend tests (`cd frontend && npm test -- --watchAll=false`). Email-based
+flows read their links out of captured emails, exactly as a person would.
+
+The tenant isolation tests are the important ones — each is a data breach if it
+fails (`tenant-isolation` and the `BREACH IF FAILING` cases in
+`school-dashboard`):
 
 - A member of Institution A cannot read Institution B's data
 - Denial is 404, so tenant existence is not disclosed
@@ -365,7 +392,7 @@ migrations disagree.
 | Phase | Scope |
 |---|---|
 | ✅ 1 | Foundation · identity · institutions · memberships · discovery |
-| 2 | Email verification · password reset · institution media uploads · profiles |
+| ✅ 2 | Profiles · education history · school dashboards · membership management · email verification · password reset |
 | 3 | Full-text + geo search · comparison · favourites · Next.js for SEO |
 | 4 | External data ingestion (Google Places, open datasets) · BullMQ + Redis |
 | 5 | Reviews and ratings — *the first real `rating` data* |

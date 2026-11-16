@@ -210,4 +210,159 @@ describe('Authentication (e2e)', () => {
         .expect(401);
     });
   });
+
+  describe('/auth/me', () => {
+    /** Registers, logs in, and returns both credentials. */
+    const signIn = async () => {
+      await api(app).post('/api/v1/auth/register').send(valid).expect(201);
+      const res = await api(app)
+        .post('/api/v1/auth/login')
+        .send({ email: valid.email, password: valid.password })
+        .expect(200);
+      return {
+        accessToken: res.body.data.accessToken as string,
+        cookie: (res.headers['set-cookie'] as unknown as string[]).join(';'),
+      };
+    };
+
+    it('returns the user with their memberships', async () => {
+      const { accessToken } = await signIn();
+
+      const res = await api(app)
+        .get('/api/v1/auth/me')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+
+      expect(res.body.data.user.email).toBe(valid.email);
+      expect(res.body.data.user.platformRole).toBe('USER');
+      expect(res.body.data.memberships).toEqual([]);
+      // The credential must never ride along in the profile payload.
+      expect(res.body.data.user.passwordHash).toBeUndefined();
+    });
+
+    it('reports an ACTIVE membership but not a PENDING one', async () => {
+      const { accessToken } = await signIn();
+      const user = await prisma.user.findFirstOrThrow({ where: { email: valid.email } });
+
+      const makeInstitution = (suffix: string) =>
+        prisma.institution.create({
+          data: {
+            id: `00000000-0000-7000-8000-00000000000${suffix}`,
+            slug: `me-test-${suffix}`,
+            name: `Me Test ${suffix}`,
+            category: 'SCHOOL',
+            countryCode: 'GB',
+            status: 'PUBLISHED',
+          },
+        });
+
+      const active = await makeInstitution('1');
+      const pending = await makeInstitution('2');
+
+      await prisma.institutionMembership.createMany({
+        data: [
+          {
+            id: '00000000-0000-7000-8000-0000000000a1',
+            userId: user.id,
+            institutionId: active.id,
+            role: 'INSTITUTION_ADMIN',
+            status: 'ACTIVE',
+          },
+          {
+            id: '00000000-0000-7000-8000-0000000000a2',
+            userId: user.id,
+            institutionId: pending.id,
+            role: 'STUDENT',
+            status: 'PENDING',
+          },
+        ],
+      });
+
+      const res = await api(app)
+        .get('/api/v1/auth/me')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+
+      // A PENDING request is not access. Returning it would make the UI offer
+      // a dashboard that every API call behind it answers with 404.
+      expect(res.body.data.memberships).toEqual([
+        {
+          institutionId: active.id,
+          slug: 'me-test-1',
+          name: 'Me Test 1',
+          role: 'INSTITUTION_ADMIN',
+        },
+      ]);
+    });
+  });
+
+  describe('/auth/logout-all', () => {
+    const signInTwice = async () => {
+      await api(app).post('/api/v1/auth/register').send(valid).expect(201);
+      const first = await api(app)
+        .post('/api/v1/auth/login')
+        .send({ email: valid.email, password: valid.password })
+        .expect(200);
+      const second = await api(app)
+        .post('/api/v1/auth/login')
+        .send({ email: valid.email, password: valid.password })
+        .expect(200);
+      return { first, second };
+    };
+
+    it('requires authentication', () =>
+      api(app).post('/api/v1/auth/logout-all').expect(401));
+
+    it('BREACH IF FAILING: kills every session on every device', async () => {
+      const { first, second } = await signInTwice();
+      const firstCookie = (first.headers['set-cookie'] as unknown as string[]).join(';');
+      const secondCookie = (second.headers['set-cookie'] as unknown as string[]).join(';');
+
+      expect(await prisma.refreshToken.count({ where: { revokedAt: null } })).toBe(2);
+
+      const res = await api(app)
+        .post('/api/v1/auth/logout-all')
+        .set('Authorization', `Bearer ${first.body.data.accessToken}`)
+        .expect(200);
+
+      expect(res.body.data.sessionsRevoked).toBe(2);
+      expect(await prisma.refreshToken.count({ where: { revokedAt: null } })).toBe(0);
+
+      // Access tokens die immediately via tokenVersion — including the OTHER
+      // device's, which never sent a request.
+      await api(app)
+        .get('/api/v1/auth/me')
+        .set('Authorization', `Bearer ${first.body.data.accessToken}`)
+        .expect(401);
+      await api(app)
+        .get('/api/v1/auth/me')
+        .set('Authorization', `Bearer ${second.body.data.accessToken}`)
+        .expect(401);
+
+      // ...and neither device can mint a new one.
+      await api(app).post('/api/v1/auth/refresh').set('Cookie', firstCookie).expect(401);
+      await api(app).post('/api/v1/auth/refresh').set('Cookie', secondCookie).expect(401);
+    });
+
+    it('leaves other users untouched', async () => {
+      const { first } = await signInTwice();
+
+      const other = { email: 'other@auth.test', password: 'ValidPass123', fullName: 'Other' };
+      await api(app).post('/api/v1/auth/register').send(other).expect(201);
+      const otherLogin = await api(app)
+        .post('/api/v1/auth/login')
+        .send({ email: other.email, password: other.password })
+        .expect(200);
+
+      await api(app)
+        .post('/api/v1/auth/logout-all')
+        .set('Authorization', `Bearer ${first.body.data.accessToken}`)
+        .expect(200);
+
+      await api(app)
+        .get('/api/v1/auth/me')
+        .set('Authorization', `Bearer ${otherLogin.body.data.accessToken}`)
+        .expect(200);
+    });
+  });
 });

@@ -17,6 +17,7 @@ import {
   MembershipStatus,
   PlatformRole,
   PrismaClient,
+  ProfileVisibility,
   UserStatus,
 } from '@prisma/client';
 import { hash } from '@node-rs/argon2';
@@ -72,10 +73,16 @@ const INSTITUTIONS = [
 const DEMO_PASSWORD = 'DevPassword123';
 
 const USERS = [
+  // The platform owner. Needed to sign in to /admin at all — without it the
+  // super-admin surface has no account that can reach it. This is a DEMO
+  // credential; `npm run create:superadmin` is the script for a real one.
+  { key: 'super-admin',    email: 'super.admin@eduhub.test',    fullName: 'Sam Superuser', platformRole: PlatformRole.SUPER_ADMIN },
   { key: 'platform-admin', email: 'platform.admin@eduhub.test', fullName: 'Priya Platform', platformRole: PlatformRole.PLATFORM_ADMIN },
   { key: 'alice-admin',    email: 'alice.admin@eduhub.test',    fullName: 'Alice Adeyemi',  platformRole: PlatformRole.USER },
   { key: 'bob-admin',      email: 'bob.admin@eduhub.test',      fullName: 'Bob Baptiste',   platformRole: PlatformRole.USER },
   { key: 'carla-student',  email: 'carla.student@eduhub.test',  fullName: 'Carla Chen',     platformRole: PlatformRole.USER },
+  { key: 'dan-teacher',    email: 'dan.teacher@eduhub.test',    fullName: 'Dan Darko',      platformRole: PlatformRole.USER },
+  { key: 'sara-staff',     email: 'sara.staff@eduhub.test',     fullName: 'Sara Silva',     platformRole: PlatformRole.USER },
 ] as const;
 
 async function main(): Promise<void> {
@@ -154,20 +161,43 @@ async function main(): Promise<void> {
     { key: 'alice@northgate', userKey: 'alice-admin',   institutionId: northgate, role: MembershipRole.INSTITUTION_ADMIN, memberId: 'NG-ADM-001' },
     { key: 'bob@riverside',   userKey: 'bob-admin',     institutionId: riverside, role: MembershipRole.INSTITUTION_ADMIN, memberId: 'RP-ADM-001' },
     { key: 'carla@northgate', userKey: 'carla-student', institutionId: northgate, role: MembershipRole.STUDENT,           memberId: 'NG-STU-2026-014' },
+    { key: 'dan@northgate',   userKey: 'dan-teacher',   institutionId: northgate, role: MembershipRole.TEACHER,           memberId: 'NG-TCH-007' },
+    { key: 'sara@northgate',  userKey: 'sara-staff',    institutionId: northgate, role: MembershipRole.STAFF,             memberId: 'NG-STF-003' },
+    // An ENDED membership, so the education-history screen has a past entry
+    // to show. Kept as LEFT with an end date, exactly as the API records one.
+    { key: 'carla@lakeside',  userKey: 'carla-student', institutionId: deterministicId('institution:Lakeside Community College'), role: MembershipRole.STUDENT, memberId: null, joinedAt: '2022-09-01', leftAt: '2025-06-30' },
   ] as const;
 
+  const superAdminId = deterministicId('user:super-admin');
   for (const m of memberships) {
     const id = deterministicId(`membership:${m.key}`);
+    const ended = 'leftAt' in m;
     const data = {
       userId: deterministicId(`user:${m.userKey}`),
       institutionId: m.institutionId,
       role: m.role,
-      status: MembershipStatus.ACTIVE,
+      status: ended ? MembershipStatus.LEFT : MembershipStatus.ACTIVE,
       institutionMemberId: m.memberId,
-      joinedAt: new Date('2026-01-15T00:00:00Z'),
+      joinedAt: new Date(ended ? `${m.joinedAt}T00:00:00Z` : '2026-01-15T00:00:00Z'),
+      leftAt: ended ? new Date(`${m.leftAt}T00:00:00Z`) : null,
+      createdByUserId: superAdminId,
     };
     await prisma.institutionMembership.upsert({ where: { id }, update: data, create: { id, ...data } });
   }
+
+  // One public demo profile, so /u/:id has something to show signed out.
+  const carlaId = deterministicId('user:carla-student');
+  const carlaProfile = {
+    headline: 'Year 12 student — physics and robotics',
+    bio: 'Demo profile created by the EduHub development seed. Not a real person.',
+    location: 'Manchester, UK',
+    visibility: ProfileVisibility.PUBLIC,
+  };
+  await prisma.userProfile.upsert({
+    where: { userId: carlaId },
+    update: carlaProfile,
+    create: { userId: carlaId, ...carlaProfile },
+  });
 
   const [users, institutions, membershipCount, mediaCount] = await Promise.all([
     prisma.user.count(),
@@ -179,6 +209,16 @@ async function main(): Promise<void> {
   console.warn(
     `Seed complete — ${users} users, ${institutions} institutions, ` +
       `${membershipCount} memberships, ${mediaCount} media (all source=SEED).`,
+  );
+  console.warn(
+    `\nSign in at http://localhost:3000/login\n` +
+      `  SUPER_ADMIN      super.admin@eduhub.test     / ${DEMO_PASSWORD}\n` +
+      `  PLATFORM_ADMIN   platform.admin@eduhub.test  / ${DEMO_PASSWORD}\n` +
+      `  school admin     alice.admin@eduhub.test     / ${DEMO_PASSWORD}   (Northgate)\n` +
+      `  school admin     bob.admin@eduhub.test       / ${DEMO_PASSWORD}   (Riverside)\n` +
+      `  staff            sara.staff@eduhub.test      / ${DEMO_PASSWORD}   (Northgate)\n` +
+      `  teacher          dan.teacher@eduhub.test     / ${DEMO_PASSWORD}   (Northgate)\n` +
+      `  student          carla.student@eduhub.test   / ${DEMO_PASSWORD}   (public profile: /u/${carlaId})`,
   );
 }
 

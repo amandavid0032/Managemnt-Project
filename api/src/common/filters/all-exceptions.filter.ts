@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { Request, Response } from 'express';
+import { errorStats } from '../utils/error-stats';
 
 interface ErrorBody {
   success: false;
@@ -89,6 +90,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     }
 
     if (status >= 500) {
+      errorStats.recordServerError();
       this.logger.error(
         `${req.method} ${req.url} -> ${status}`,
         exception instanceof Error ? exception.stack : String(exception),
